@@ -14,8 +14,38 @@ STRIKEOUT = 11
 CARET = 14
 TEXT_NOTE = 0
 
-# Default highlight color (orange-yellow used by common PDF reviewers)
-DEFAULT_HIGHLIGHT_COLOR = (1.0, 0.76, 0.0)
+# Named colors for --color lookup
+NAMED_COLORS: dict[str, tuple[float, float, float]] = {
+    "red": (1.0, 0.0, 0.0),
+    "green": (0.0, 1.0, 0.0),
+    "blue": (0.0, 0.0, 1.0),
+    "yellow": (1.0, 1.0, 0.0),
+    "orange": (1.0, 0.65, 0.0),
+    "purple": (0.5, 0.0, 0.5),
+    "pink": (1.0, 0.75, 0.8),
+    "cyan": (0.0, 1.0, 1.0),
+}
+
+
+def resolve_color(value: str) -> tuple[float, ...]:
+    """Resolve a color name or R,G,B string to an RGB tuple.
+
+    Accepts named colors (e.g. "red", "yellow") or comma-separated floats
+    (e.g. "1.0,0.76,0.0"). Raises ValueError on invalid input.
+    """
+    name = value.strip().lower()
+    if name in NAMED_COLORS:
+        return NAMED_COLORS[name]
+    try:
+        parts = [float(x.strip()) for x in value.split(",")]
+        if len(parts) != 3:
+            raise ValueError
+        return tuple(parts)
+    except (ValueError, TypeError):
+        valid_names = ", ".join(sorted(NAMED_COLORS))
+        raise ValueError(
+            f"Invalid color '{value}'. Use a name ({valid_names}) or R,G,B floats (e.g. 1.0,0.76,0.0)"
+        )
 
 
 @dataclass
@@ -144,14 +174,14 @@ def _caret_context(page: fitz.Page, rect: fitz.Rect, n: int = 3) -> str:
 
 def extract_annotations(
     pdf_path: str | Path,
-    highlight_color: tuple[float, ...] = DEFAULT_HIGHLIGHT_COLOR,
+    highlight_color: tuple[float, ...] | None = None,
     color_tolerance: float = 0.15,
 ) -> list[PageAnnotations]:
-    """Extract all review annotations from a PDF.
+    """Extract review annotations from a PDF.
 
-    Collects highlights, strikethroughs, carets, and text notes that match
-    the target highlight color (for highlights/text notes) or red-ish color
-    (for strikethroughs/carets).
+    By default extracts all annotations regardless of color. When
+    *highlight_color* is provided, only annotations whose color matches
+    (within *color_tolerance*) are included.
     """
     doc = fitz.open(str(pdf_path))
     result: list[PageAnnotations] = []
@@ -171,6 +201,11 @@ def extract_annotations(
                 continue
 
             stroke = tuple(annot.colors.get("stroke") or [])
+
+            # Filter by color when requested
+            if highlight_color is not None:
+                if not _color_matches(stroke, highlight_color, color_tolerance):
+                    continue
 
             # Use vertex-based word extraction for precision when available
             clip_text = _extract_annotation_text(page, annot)

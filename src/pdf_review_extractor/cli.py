@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .extract import resolve_color
 from .formatter import format_annotations
 
 
@@ -30,7 +31,7 @@ def main(argv: list[str] | None = None) -> None:
         "--color",
         type=str,
         default=None,
-        help="Highlight color as R,G,B floats (default: 1.0,0.76,0.0)",
+        help="Filter by color: name (red, yellow, blue...) or R,G,B floats (default: all colors)",
     )
 
     args = parser.parse_args(argv)
@@ -43,12 +44,9 @@ def main(argv: list[str] | None = None) -> None:
     highlight_color = None
     if args.color:
         try:
-            parts = [float(x.strip()) for x in args.color.split(",")]
-            if len(parts) != 3:
-                raise ValueError
-            highlight_color = tuple(parts)
-        except ValueError:
-            print("Error: --color must be R,G,B floats (e.g. 1.0,0.76,0.0)", file=sys.stderr)
+            highlight_color = resolve_color(args.color)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
     # Determine output path

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import fitz
 
-from .extract import DEFAULT_HIGHLIGHT_COLOR, extract_annotations
+from .extract import extract_annotations
 from .linemap import (
     build_page_line_map,
     extract_line_numbers,
@@ -52,9 +52,6 @@ def format_annotations(
 
     Returns the formatted review text as a string.
     """
-    if highlight_color is None:
-        highlight_color = DEFAULT_HIGHLIGHT_COLOR
-
     # Extract annotations
     page_annotations = extract_annotations(pdf_path, highlight_color=highlight_color)
 
