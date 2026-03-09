@@ -11,3 +11,4 @@ dependencies = ["PyMuPDF>=1.24"]
 
 [project.scripts]
 pdf-review-extract = "pdf_review_extractor.cli:main"
+prx = "pdf_review_extractor.cli:main"
