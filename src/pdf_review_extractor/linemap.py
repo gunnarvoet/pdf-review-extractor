@@ -20,7 +20,7 @@ class LineNumber:
 def extract_line_numbers(
     doc: fitz.Document,
     max_x: float = 55.0,
-    min_font_size: float = 6.0,
+    min_font_size: float = 4.0,
     max_font_size: float = 12.0,
 ) -> list[LineNumber]:
     """Extract manuscript line numbers from the left margin of all pages.
