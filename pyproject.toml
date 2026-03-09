@@ -1,0 +1,13 @@
+[build-system]
+requires = ["uv_build>=0.10.9,<0.11.0"]
+build-backend = "uv_build"
+
+[project]
+name = "pdf-review-extractor"
+version = "0.1.0"
+description = "Extract highlighted annotations from reviewed PDF manuscripts"
+requires-python = ">=3.10"
+dependencies = ["PyMuPDF>=1.24"]
+
+[project.scripts]
+pdf-review-extract = "pdf_review_extractor.cli:main"
