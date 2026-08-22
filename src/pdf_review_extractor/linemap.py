@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import fitz
+import pymupdf
 
 
 @dataclass
@@ -17,7 +17,7 @@ class LineNumber:
     page_index: int
 
 
-def detect_margin_x(doc: fitz.Document, fallback: float = 55.0) -> float:
+def detect_margin_x(doc: pymupdf.Document, fallback: float = 55.0) -> float:
     """Detect the x-coordinate cutoff separating margin line numbers from body text.
 
     Manuscript line numbers sit to the left of the body text block. Different
@@ -65,7 +65,7 @@ def detect_margin_x(doc: fitz.Document, fallback: float = 55.0) -> float:
 
 
 def extract_line_numbers(
-    doc: fitz.Document,
+    doc: pymupdf.Document,
     max_x: float | None = None,
     min_font_size: float = 4.0,
     max_font_size: float = 12.0,

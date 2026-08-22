@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-import fitz
+import pymupdf
 
 from .extract import extract_annotations
 from .linemap import (
@@ -57,7 +57,7 @@ def format_annotations(
     *margin_x* overrides the auto-detected left-margin cutoff used to find
     manuscript line numbers. Returns the formatted review text as a string.
     """
-    doc = fitz.open(str(pdf_path))
+    doc = pymupdf.open(str(pdf_path))
     if margin_x is None:
         margin_x = detect_margin_x(doc)
 

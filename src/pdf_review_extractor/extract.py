@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import fitz
+import pymupdf
 
 from .linemap import detect_margin_x
 
@@ -90,7 +90,7 @@ def _get_annotation_kind(type_code: int) -> str | None:
 
 
 def _extract_annotation_text(
-    page: fitz.Page, annot: fitz.Annot, margin_x: float = 55.0
+    page: pymupdf.Page, annot: pymupdf.Annot, margin_x: float = 55.0
 ) -> str:
     """Extract text covered by an annotation using vertex-based word matching.
 
@@ -113,7 +113,7 @@ def _extract_annotation_text(
         quad = vertices[qi : qi + 4]
         if len(quad) < 4:
             break
-        qr = fitz.Rect(
+        qr = pymupdf.Rect(
             min(p[0] for p in quad),
             min(p[1] for p in quad),
             max(p[0] for p in quad),
@@ -121,7 +121,7 @@ def _extract_annotation_text(
         )
 
         for w in words:
-            wr = fitz.Rect(w[:4])
+            wr = pymupdf.Rect(w[:4])
             if not wr.intersects(qr):
                 continue
             # Skip margin line numbers (digits near left edge)
@@ -141,7 +141,7 @@ def _extract_annotation_text(
 
 
 def _caret_context(
-    page: fitz.Page, rect: fitz.Rect, n: int = 3, margin_x: float = 55.0
+    page: pymupdf.Page, rect: pymupdf.Rect, n: int = 3, margin_x: float = 55.0
 ) -> str:
     """Get surrounding word context for a caret annotation.
 
@@ -194,7 +194,7 @@ def extract_annotations(
     which digits are treated as manuscript line numbers; auto-detected when
     None.
     """
-    doc = fitz.open(str(pdf_path))
+    doc = pymupdf.open(str(pdf_path))
     if margin_x is None:
         margin_x = detect_margin_x(doc)
     result: list[PageAnnotations] = []
