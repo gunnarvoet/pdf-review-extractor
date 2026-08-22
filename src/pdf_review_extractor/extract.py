@@ -7,6 +7,8 @@ from pathlib import Path
 
 import fitz
 
+from .linemap import detect_margin_x
+
 
 # Annotation type codes
 HIGHLIGHT = 8
@@ -87,11 +89,15 @@ def _get_annotation_kind(type_code: int) -> str | None:
     }.get(type_code)
 
 
-def _extract_annotation_text(page: fitz.Page, annot: fitz.Annot) -> str:
+def _extract_annotation_text(
+    page: fitz.Page, annot: fitz.Annot, margin_x: float = 55.0
+) -> str:
     """Extract text covered by an annotation using vertex-based word matching.
 
     Uses the annotation's quad points (vertices) when available for precise
     word-level extraction. Falls back to rect-based clipping otherwise.
+    Words starting left of *margin_x* that are pure digits are treated as
+    manuscript line numbers and dropped.
     """
     vertices = annot.vertices
     if not vertices or len(vertices) < 4:
@@ -119,7 +125,7 @@ def _extract_annotation_text(page: fitz.Page, annot: fitz.Annot) -> str:
             if not wr.intersects(qr):
                 continue
             # Skip margin line numbers (digits near left edge)
-            if w[0] < 55 and w[4].isdigit():
+            if w[0] < margin_x and w[4].isdigit():
                 continue
             # Check that the word's horizontal center falls within the quad
             cx = (w[0] + w[2]) / 2
@@ -134,7 +140,9 @@ def _extract_annotation_text(page: fitz.Page, annot: fitz.Annot) -> str:
     return " ".join(w[2] for w in matched_words)
 
 
-def _caret_context(page: fitz.Page, rect: fitz.Rect, n: int = 3) -> str:
+def _caret_context(
+    page: fitz.Page, rect: fitz.Rect, n: int = 3, margin_x: float = 55.0
+) -> str:
     """Get surrounding word context for a caret annotation.
 
     Returns a string like ``...before words ^insertion^ after words...``
@@ -151,7 +159,7 @@ def _caret_context(page: fitz.Page, rect: fitz.Rect, n: int = 3) -> str:
         wy = (w[1] + w[3]) / 2
         if abs(wy - cy) > y_tol:
             continue
-        if w[0] < 55 and w[4].isdigit():
+        if w[0] < margin_x and w[4].isdigit():
             continue
         line_words.append((w[0], w[4]))  # (x0, text)
 
@@ -176,14 +184,19 @@ def extract_annotations(
     pdf_path: str | Path,
     highlight_color: tuple[float, ...] | None = None,
     color_tolerance: float = 0.15,
+    margin_x: float | None = None,
 ) -> list[PageAnnotations]:
     """Extract review annotations from a PDF.
 
     By default extracts all annotations regardless of color. When
     *highlight_color* is provided, only annotations whose color matches
-    (within *color_tolerance*) are included.
+    (within *color_tolerance*) are included. *margin_x* is the cutoff left of
+    which digits are treated as manuscript line numbers; auto-detected when
+    None.
     """
     doc = fitz.open(str(pdf_path))
+    if margin_x is None:
+        margin_x = detect_margin_x(doc)
     result: list[PageAnnotations] = []
 
     for page_index in range(len(doc)):
@@ -208,13 +221,13 @@ def extract_annotations(
                     continue
 
             # Use vertex-based word extraction for precision when available
-            clip_text = _extract_annotation_text(page, annot)
+            clip_text = _extract_annotation_text(page, annot, margin_x=margin_x)
             note = annot.info.get("content", "")
             rect = tuple(annot.rect)
 
             # For carets, store surrounding context instead of clip text
             if kind == "caret":
-                clip_text = _caret_context(page, annot.rect)
+                clip_text = _caret_context(page, annot.rect, margin_x=margin_x)
 
             page_annots.annotations.append(
                 Annotation(

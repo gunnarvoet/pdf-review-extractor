@@ -17,16 +17,68 @@ class LineNumber:
     page_index: int
 
 
+def detect_margin_x(doc: fitz.Document, fallback: float = 55.0) -> float:
+    """Detect the x-coordinate cutoff separating margin line numbers from body text.
+
+    Manuscript line numbers sit to the left of the body text block. Different
+    templates place them at different offsets (AGU/Word ~40pt, LaTeX lineno
+    ~70pt), so infer the cutoff from the document: find the leftmost
+    well-populated left edge of non-digit text lines and cut just left of it.
+
+    Using the leftmost populated edge rather than the most common one keeps
+    two-column layouts working, where the right column may start more lines
+    than the left one.
+
+    Returns *fallback* if the document has no usable text.
+    """
+    counts: dict[int, int] = {}
+
+    for page_index in range(len(doc)):
+        page = doc[page_index]
+        for block in page.get_text("dict")["blocks"]:
+            if block["type"] != 0:
+                continue
+            for line in block["lines"]:
+                spans = line["spans"]
+                if not spans:
+                    continue
+                first = spans[0]
+                text = first["text"].strip()
+                # Skip empty spans and digit-only spans (those are the
+                # line numbers we are trying to separate out).
+                if not text or text.isdigit():
+                    continue
+                bucket = int(round(first["bbox"][0]))
+                counts[bucket] = counts.get(bucket, 0) + 1
+
+    if not counts:
+        return fallback
+
+    # Ignore sparse buckets (headers, footers, stray indents) so a handful of
+    # far-left elements cannot drag the cutoff down.
+    threshold = max(3, 0.05 * max(counts.values()))
+    populated = [x for x, n in counts.items() if n >= threshold]
+    if not populated:
+        return fallback
+
+    return float(min(populated)) - 1.0
+
+
 def extract_line_numbers(
     doc: fitz.Document,
-    max_x: float = 55.0,
+    max_x: float | None = None,
     min_font_size: float = 4.0,
     max_font_size: float = 12.0,
 ) -> list[LineNumber]:
     """Extract manuscript line numbers from the left margin of all pages.
 
     Line numbers are small digit-only text spans near the left margin.
+    *max_x* is the cutoff separating margin from body text; when None it is
+    auto-detected with :func:`detect_margin_x`.
     """
+    if max_x is None:
+        max_x = detect_margin_x(doc)
+
     line_numbers: list[LineNumber] = []
 
     for page_index in range(len(doc)):

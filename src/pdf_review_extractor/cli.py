@@ -34,6 +34,14 @@ def main(argv: list[str] | None = None) -> None:
         help="Filter by color: name (red, yellow, blue...) or R,G,B floats (default: all colors)",
     )
 
+    parser.add_argument(
+        "--margin-x",
+        type=float,
+        default=None,
+        help="x-coordinate (pt) cutoff separating margin line numbers from body "
+        "text (default: auto-detect)",
+    )
+
     args = parser.parse_args(argv)
 
     if not args.pdf.exists():
@@ -55,7 +63,9 @@ def main(argv: list[str] | None = None) -> None:
         output_path = args.pdf.with_name(args.pdf.stem + "_review.txt")
 
     # Run extraction
-    result = format_annotations(args.pdf, highlight_color=highlight_color)
+    result = format_annotations(
+        args.pdf, highlight_color=highlight_color, margin_x=args.margin_x
+    )
 
     output_path.write_text(result)
     print(f"Written to {output_path}")

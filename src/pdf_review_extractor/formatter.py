@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import fitz
 from .extract import extract_annotations
 from .linemap import (
     build_page_line_map,
+    detect_margin_x,
     extract_line_numbers,
     rect_to_line_range,
 )
@@ -47,18 +49,31 @@ def _clean_clip_text(text: str) -> str:
 def format_annotations(
     pdf_path: str | Path,
     highlight_color: tuple[float, ...] | None = None,
+    margin_x: float | None = None,
 ) -> str:
     """Extract and format all annotations from a PDF into review text.
 
-    Returns the formatted review text as a string.
+    *margin_x* overrides the auto-detected left-margin cutoff used to find
+    manuscript line numbers. Returns the formatted review text as a string.
     """
+    doc = fitz.open(str(pdf_path))
+    if margin_x is None:
+        margin_x = detect_margin_x(doc)
+
     # Extract annotations
-    page_annotations = extract_annotations(pdf_path, highlight_color=highlight_color)
+    page_annotations = extract_annotations(
+        pdf_path, highlight_color=highlight_color, margin_x=margin_x
+    )
 
     # Build line number map
-    doc = fitz.open(str(pdf_path))
-    line_numbers = extract_line_numbers(doc)
+    line_numbers = extract_line_numbers(doc, max_x=margin_x)
     page_map = build_page_line_map(line_numbers)
+    if not line_numbers:
+        print(
+            f"Warning: no manuscript line numbers found left of x={margin_x:.0f}pt; "
+            "all annotations will be skipped. Try --margin-x.",
+            file=sys.stderr,
+        )
 
     entries: list[ReviewEntry] = []
 
