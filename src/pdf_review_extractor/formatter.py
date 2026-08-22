@@ -24,6 +24,7 @@ class ReviewEntry:
     line_start: int
     line_end: int
     text: str  # the formatted output line
+    has_line_numbers: bool = True  # False for figure pages (sorted last)
 
 
 def _format_line_ref(start: int, end: int) -> str:
@@ -84,11 +85,15 @@ def format_annotations(
             line_range = rect_to_line_range(annot.rect, page_idx, page_map)
 
             if line_range is None:
-                # Page without line numbers (figures, etc.) — skip or use page ref
-                continue
-
-            start, end = line_range
-            line_ref = _format_line_ref(start, end)
+                # Page without line numbers (figures, etc.) — reference the
+                # PDF page instead so the annotation is not lost.
+                has_lines = False
+                start = end = page_idx + 1
+                line_ref = f"p{page_idx + 1}"
+            else:
+                has_lines = True
+                start, end = line_range
+                line_ref = _format_line_ref(start, end)
             clip = _clean_clip_text(annot.text)
             note = annot.note.strip()
 
@@ -124,13 +129,18 @@ def format_annotations(
                 continue
 
             entries.append(
-                ReviewEntry(line_start=start, line_end=end, text=entry_text)
+                ReviewEntry(
+                    line_start=start,
+                    line_end=end,
+                    text=entry_text,
+                    has_line_numbers=has_lines,
+                )
             )
 
     doc.close()
 
-    # Sort by line number
-    entries.sort(key=lambda e: (e.line_start, e.line_end))
+    # Sort by line number; page-referenced entries (figures) come last
+    entries.sort(key=lambda e: (not e.has_line_numbers, e.line_start, e.line_end))
 
     # Join with blank lines between entries
     return "\n\n".join(e.text for e in entries) + "\n"
