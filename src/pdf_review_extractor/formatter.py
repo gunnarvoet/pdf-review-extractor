@@ -13,7 +13,7 @@ from .linemap import (
     build_page_line_map,
     detect_margin_x,
     extract_line_numbers,
-    rect_to_line_range,
+    ys_to_line_range,
 )
 
 
@@ -31,20 +31,6 @@ def _format_line_ref(start: int, end: int) -> str:
     if start == end:
         return str(start)
     return f"{start}-{end}"
-
-
-def _clean_clip_text(text: str) -> str:
-    """Remove line numbers and extra whitespace from clipped text."""
-    # Remove standalone numbers that are likely line numbers
-    # They appear as lines containing just a number
-    lines = text.split("\n")
-    cleaned = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.isdigit():
-            continue
-        cleaned.append(stripped)
-    return " ".join(cleaned).strip()
 
 
 def format_annotations(
@@ -82,7 +68,12 @@ def format_annotations(
         page_idx = page_annots.page_index
 
         for annot in page_annots.annotations:
-            line_range = rect_to_line_range(annot.rect, page_idx, page_map)
+            if annot.quads:
+                ys = [(q[1] + q[3]) / 2 for q in annot.quads]
+            else:
+                # Carets and sticky-note icons are centered on their line
+                ys = [(annot.rect[1] + annot.rect[3]) / 2]
+            line_range = ys_to_line_range(ys, page_idx, page_map)
 
             if line_range is None:
                 # Page without line numbers (figures, etc.) — reference the
@@ -94,17 +85,26 @@ def format_annotations(
                 has_lines = True
                 start, end = line_range
                 line_ref = _format_line_ref(start, end)
-            clip = _clean_clip_text(annot.text)
+            clip = annot.text
             note = annot.note.strip()
 
             if annot.kind == "highlight":
+                # Complete words the highlight cuts off
+                clip = f"{annot.prefix}{clip}{annot.suffix}"
                 if note:
                     entry_text = f'{line_ref}: "{clip}" — {note}'
                 else:
                     entry_text = f'{line_ref}: "{clip}"'
 
             elif annot.kind == "strikeout":
-                if note:
+                if annot.prefix or annot.suffix:
+                    # Only part of a word is struck: show the whole word and
+                    # what remains of it after the edit
+                    word = f"{annot.prefix}{clip}{annot.suffix}"
+                    entry_text = (
+                        f"{line_ref}: {word} -> {annot.prefix}{note}{annot.suffix}"
+                    )
+                elif note:
                     # Strikeout with replacement text in note
                     entry_text = f"{line_ref}: {clip} -> {note}"
                 else:

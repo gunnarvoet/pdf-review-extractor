@@ -27,11 +27,14 @@ def detect_margin_x(doc: pymupdf.Document, fallback: float = 55.0) -> float:
 
     Using the leftmost populated edge rather than the most common one keeps
     two-column layouts working, where the right column may start more lines
-    than the left one.
+    than the left one. Running headers and footers (text repeated on at
+    least half the pages, e.g. a preprint DOI banner) are ignored, since
+    they can sit left of the line numbers on every page.
 
     Returns *fallback* if the document has no usable text.
     """
-    counts: dict[int, int] = {}
+    edges: list[tuple[int, str]] = []  # (left edge bucket, text)
+    pages_with: dict[str, set[int]] = {}
 
     for page_index in range(len(doc)):
         page = doc[page_index]
@@ -48,8 +51,14 @@ def detect_margin_x(doc: pymupdf.Document, fallback: float = 55.0) -> float:
                 # line numbers we are trying to separate out).
                 if not text or text.isdigit():
                     continue
-                bucket = int(round(first["bbox"][0]))
-                counts[bucket] = counts.get(bucket, 0) + 1
+                edges.append((int(round(first["bbox"][0])), text))
+                pages_with.setdefault(text, set()).add(page_index)
+
+    min_pages = max(3, len(doc) / 2)
+    counts: dict[int, int] = {}
+    for bucket, text in edges:
+        if len(pages_with[text]) < min_pages:
+            counts[bucket] = counts.get(bucket, 0) + 1
 
     if not counts:
         return fallback
@@ -124,57 +133,31 @@ def build_page_line_map(
     return page_map
 
 
-def y_to_line_number(
-    y: float,
-    page_lines: list[LineNumber],
-    tolerance: float = 3.0,
-) -> int | None:
-    """Find the manuscript line number that contains a given y-coordinate.
+def y_to_line_number(y: float, page_lines: list[LineNumber]) -> int | None:
+    """Find the manuscript line number whose label is vertically nearest to *y*.
 
-    Uses interval-based lookup with a tolerance: each line's region extends
-    from (y_top - tolerance) to the next line's (y_top - tolerance).
-    This handles slight misalignment between annotation rects and line labels.
+    Comparing against label centers avoids the off-by-one errors that edge
+    comparisons produce, since annotation rects routinely extend a little
+    into the neighboring line.
     """
     if not page_lines:
         return None
-
-    # Check each interval: line i owns [line_i.y_top - tol, line_{i+1}.y_top - tol)
-    for i in range(len(page_lines) - 1):
-        lower = page_lines[i].y_top - tolerance
-        upper = page_lines[i + 1].y_top - tolerance
-        if lower <= y < upper:
-            return page_lines[i].number
-
-    # Before first line
-    if y < page_lines[0].y_top - tolerance:
-        return page_lines[0].number
-
-    # After/at last line
-    return page_lines[-1].number
+    nearest = min(page_lines, key=lambda ln: abs((ln.y_top + ln.y_bottom) / 2 - y))
+    return nearest.number
 
 
-def rect_to_line_range(
-    rect: tuple[float, float, float, float],
+def ys_to_line_range(
+    ys: list[float],
     page_index: int,
     page_map: dict[int, list[LineNumber]],
 ) -> tuple[int, int] | None:
-    """Map an annotation rect to a range of manuscript line numbers.
+    """Map anchor y-coordinates of an annotation to a manuscript line range.
 
+    *ys* holds one y per text line the annotation covers (e.g. quad centers).
     Returns (start_line, end_line) or None if the page has no line numbers.
-    Uses the vertical midpoint of the top and bottom edges to avoid
-    off-by-one errors at line boundaries.
     """
     page_lines = page_map.get(page_index, [])
-    if not page_lines:
+    if not page_lines or not ys:
         return None
-
-    y_top = rect[1]
-    y_bottom = rect[3]
-
-    start_line = y_to_line_number(y_top, page_lines)
-    end_line = y_to_line_number(y_bottom, page_lines)
-
-    if start_line is None or end_line is None:
-        return None
-
-    return (min(start_line, end_line), max(start_line, end_line))
+    lines = [y_to_line_number(y, page_lines) for y in ys]
+    return (min(lines), max(lines))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -60,6 +61,9 @@ class Annotation:
     note: str  # popup note / content field
     rect: tuple[float, float, float, float]  # (x0, y0, x1, y1)
     color: tuple[float, ...]  # stroke color
+    quads: list[tuple[float, float, float, float]] = field(default_factory=list)
+    prefix: str = ""  # uncovered start of a partly covered first word
+    suffix: str = ""  # uncovered end of a partly covered last word
 
 
 @dataclass
@@ -89,81 +93,204 @@ def _get_annotation_kind(type_code: int) -> str | None:
     }.get(type_code)
 
 
-def _extract_annotation_text(
-    page: pymupdf.Page, annot: pymupdf.Annot, margin_x: float = 55.0
-) -> str:
-    """Extract text covered by an annotation using vertex-based word matching.
+# Private-use code points that Word emits for Symbol-font glyphs
+_SYMBOL_PUA = {
+    "\uf0a3": "\u2264",  # less-or-equal
+    "\uf0b0": "\u00b0",  # degree
+    "\uf0b1": "\u00b1",  # plus-minus
+    "\uf0b3": "\u2265",  # greater-or-equal
+    "\uf0b4": "\u00d7",  # multiplication
+    "\uf0b7": "\u2022",  # bullet
+}
 
-    Uses the annotation's quad points (vertices) when available for precise
-    word-level extraction. Falls back to rect-based clipping otherwise.
-    Words starting left of *margin_x* that are pure digits are treated as
-    manuscript line numbers and dropped.
+
+@dataclass
+class _Char:
+    """A single glyph on the page."""
+
+    c: str
+    rect: pymupdf.Rect
+    size: float
+
+    @property
+    def cx(self) -> float:
+        return (self.rect.x0 + self.rect.x1) / 2
+
+    @property
+    def cy(self) -> float:
+        return (self.rect.y0 + self.rect.y1) / 2
+
+
+def _page_chars(page: pymupdf.Page, margin_x: float = 55.0) -> list[_Char]:
+    """Collect all non-whitespace glyphs on a page.
+
+    Digit-only spans starting left of *margin_x* are manuscript line numbers
+    and are dropped.
     """
-    vertices = annot.vertices
-    if not vertices or len(vertices) < 4:
-        return page.get_text("text", clip=annot.rect).strip()
+    chars: list[_Char] = []
+    for block in page.get_text("rawdict")["blocks"]:
+        if block["type"] != 0:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                text = "".join(ch["c"] for ch in span["chars"]).strip()
+                if span["bbox"][0] < margin_x and text.isdigit():
+                    continue
+                for ch in span["chars"]:
+                    if ch["c"].isspace():
+                        continue
+                    chars.append(
+                        _Char(
+                            c=_SYMBOL_PUA.get(ch["c"], ch["c"]),
+                            rect=pymupdf.Rect(ch["bbox"]),
+                            size=span["size"],
+                        )
+                    )
+    return chars
 
-    # Build tight rect(s) from quad points
+
+def _clean_clip_text(text: str) -> str:
+    """Remove line numbers and extra whitespace from clipped text."""
+    # Remove standalone numbers that are likely line numbers
+    # They appear as lines containing just a number
+    lines = text.split("\n")
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.isdigit():
+            continue
+        cleaned.append(stripped)
+    return " ".join(cleaned).strip()
+
+
+def _annot_quads(annot: pymupdf.Annot) -> list[pymupdf.Rect]:
+    """Return the quad rects of a markup annotation (one or more per line)."""
+    vertices = annot.vertices or []
+    quads = []
     # Vertices come in groups of 4: top-left, top-right, bottom-left, bottom-right
-    words = page.get_text("words")
-    matched_words: list[tuple[float, float, str]] = []  # (x0, y0, word)
-
-    # Process each quad (annotation may span multiple lines = multiple quads)
-    for qi in range(0, len(vertices), 4):
+    for qi in range(0, len(vertices) - 3, 4):
         quad = vertices[qi : qi + 4]
-        if len(quad) < 4:
-            break
-        qr = pymupdf.Rect(
-            min(p[0] for p in quad),
-            min(p[1] for p in quad),
-            max(p[0] for p in quad),
-            max(p[1] for p in quad),
+        quads.append(
+            pymupdf.Rect(
+                min(p[0] for p in quad),
+                min(p[1] for p in quad),
+                max(p[0] for p in quad),
+                max(p[1] for p in quad),
+            )
         )
-
-        for w in words:
-            wr = pymupdf.Rect(w[:4])
-            if not wr.intersects(qr):
-                continue
-            # Skip margin line numbers (digits near left edge)
-            if w[0] < margin_x and w[4].isdigit():
-                continue
-            # Check that the word's horizontal center falls within the quad
-            cx = (w[0] + w[2]) / 2
-            if qr.x0 - 1 <= cx <= qr.x1 + 1:
-                matched_words.append((w[1], w[0], w[4]))  # sort by y, then x
-
-    if not matched_words:
-        return page.get_text("text", clip=annot.rect).strip()
-
-    # Sort by position (top-to-bottom, left-to-right)
-    matched_words.sort()
-    return " ".join(w[2] for w in matched_words)
+    return quads
 
 
-def _caret_context(
-    page: pymupdf.Page, rect: pymupdf.Rect, n: int = 3, margin_x: float = 55.0
-) -> str:
+def _group_rows(quads: list[pymupdf.Rect]) -> list[list[pymupdf.Rect]]:
+    """Group quads into visual text lines, top to bottom.
+
+    Sub- and superscripts get their own small quads; a quad whose center lies
+    within the vertical extent of the current row is merged into it.
+    """
+    rows: list[list[pymupdf.Rect]] = []
+    for q in sorted(quads, key=lambda r: (r.y0 + r.y1) / 2):
+        cy = (q.y0 + q.y1) / 2
+        if rows and min(r.y0 for r in rows[-1]) <= cy <= max(r.y1 for r in rows[-1]):
+            rows[-1].append(q)
+        else:
+            rows.append([q])
+    return rows
+
+
+def _is_gap(left: _Char, right: _Char) -> bool:
+    """True if the horizontal gap between two glyphs is a word space."""
+    return right.rect.x0 - left.rect.x1 > 0.15 * min(left.size, right.size)
+
+
+def _join_chars(chars: list[_Char]) -> str:
+    out = ""
+    for i, ch in enumerate(chars):
+        if i and _is_gap(chars[i - 1], ch):
+            out += " "
+        out += ch.c
+    return out
+
+
+def _extract_annotation_text(
+    chars: list[_Char], quads: list[pymupdf.Rect]
+) -> tuple[str, str, str]:
+    """Extract the text covered by an annotation's quads.
+
+    A glyph counts as covered when its center lies inside a quad. Returns
+    ``(text, prefix, suffix)``, where *prefix* and *suffix* are the uncovered
+    letters and digits of words that the annotation only partly covers at its
+    start and end (empty when it starts and ends on word boundaries).
+    """
+    parts: list[str] = []
+    prefix = suffix = ""
+    rows = _group_rows(quads)
+    used: set[int] = set()  # glyphs already assigned to a row
+
+    for ri, row in enumerate(rows):
+        y0 = min(q.y0 for q in row)
+        y1 = max(q.y1 for q in row)
+        line = sorted(
+            (c for c in chars if y0 <= c.cy <= y1 and id(c) not in used),
+            key=lambda c: c.cx,
+        )
+        used.update(id(c) for c in line)
+        covered = [any(q.x0 <= c.cx <= q.x1 for q in row) for c in line]
+        idx = [i for i, cov in enumerate(covered) if cov]
+        if not idx:
+            continue
+        first, last = idx[0], idx[-1]
+        parts.append(_join_chars(line[first : last + 1]))
+
+        if ri == 0:
+            i = first
+            while i > 0 and not _is_gap(line[i - 1], line[i]):
+                i -= 1
+            prefix = re.search(r"\w*$", _join_chars(line[i:first])).group()
+        if ri == len(rows) - 1:
+            i = last
+            while i < len(line) - 1 and not _is_gap(line[i], line[i + 1]):
+                i += 1
+            suffix = re.match(r"\w*", _join_chars(line[last + 1 : i + 1])).group()
+
+    text = ""
+    for part in parts:
+        if text and not text.endswith("-"):
+            text += " "
+        text += part
+    return text, prefix, suffix
+
+
+def _caret_context(chars: list[_Char], rect: pymupdf.Rect, n: int = 3) -> str:
     """Get surrounding word context for a caret annotation.
 
     Returns a string like ``...before words ^insertion^ after words...``
-    where the caret position is marked with ``^``.
+    where the caret position is marked with ``^``. Only words on the text
+    line nearest to the caret are used.
     """
-    words = page.get_text("words")
+    if not chars:
+        return ""
     cy = (rect.y0 + rect.y1) / 2
-    cx = rect.x0
-    y_tol = 15.0
+    cx = (rect.x0 + rect.x1) / 2
 
-    # Words on the same line, excluding margin line numbers
-    line_words = []
-    for w in words:
-        wy = (w[1] + w[3]) / 2
-        if abs(wy - cy) > y_tol:
-            continue
-        if w[0] < margin_x and w[4].isdigit():
-            continue
-        line_words.append((w[0], w[4]))  # (x0, text)
+    # The glyph next to the caret defines the line; nearest in y alone can
+    # pick a sub- or superscript elsewhere on the line
+    nearest = min(
+        chars,
+        key=lambda c: abs(c.cy - cy) + max(c.rect.x0 - cx, cx - c.rect.x1, 0),
+    )
+    line = sorted(
+        (c for c in chars if nearest.rect.y0 <= c.cy <= nearest.rect.y1),
+        key=lambda c: c.cx,
+    )
 
-    line_words.sort()
+    # Split the line into words at horizontal gaps
+    groups: list[list[_Char]] = []
+    for i, ch in enumerate(line):
+        if i and not _is_gap(line[i - 1], ch):
+            groups[-1].append(ch)
+        else:
+            groups.append([ch])
+    line_words = [((g[0].rect.x0 + g[-1].rect.x1) / 2, _join_chars(g)) for g in groups]
 
     before = [t for x, t in line_words if x < cx]
     after = [t for x, t in line_words if x >= cx]
@@ -206,6 +333,7 @@ def extract_annotations(
             continue
 
         page_annots = PageAnnotations(page_index=page_index)
+        chars = _page_chars(page, margin_x=margin_x)
 
         for annot in annots:
             type_code = annot.type[0]
@@ -220,14 +348,20 @@ def extract_annotations(
                 if not _color_matches(stroke, highlight_color, color_tolerance):
                     continue
 
-            # Use vertex-based word extraction for precision when available
-            clip_text = _extract_annotation_text(page, annot, margin_x=margin_x)
+            quads = _annot_quads(annot)
             note = annot.info.get("content", "")
             rect = tuple(annot.rect)
+            prefix = suffix = ""
 
-            # For carets, store surrounding context instead of clip text
             if kind == "caret":
-                clip_text = _caret_context(page, annot.rect, margin_x=margin_x)
+                # Store surrounding context instead of clip text
+                clip_text = _caret_context(chars, annot.rect)
+            else:
+                clip_text = ""
+                if quads:
+                    clip_text, prefix, suffix = _extract_annotation_text(chars, quads)
+                if not clip_text:
+                    clip_text = _clean_clip_text(page.get_text("text", clip=annot.rect))
 
             page_annots.annotations.append(
                 Annotation(
@@ -237,6 +371,9 @@ def extract_annotations(
                     note=note,
                     rect=rect,
                     color=stroke,
+                    quads=[tuple(q) for q in quads],
+                    prefix=prefix,
+                    suffix=suffix,
                 )
             )
 
